@@ -26,3 +26,29 @@ Operation:
   and keep it "sticky" until the next click.
 - Preferences: Access the Apple Menu -> Preferences to set the alarm and display options.
 - Hiding Cursor: The cursor will automatically hide after 2 seconds of inactivity to keep the clock face clean.
+
+
+
+
+Building BigMaclock
+Prerequisites
+1. Retro68 toolchain - Download and build from: https://github.com/autc04/Retro68
+2. CMake - Install via your system's package manager
+Setup
+1. Clone the repository and navigate to it:
+      cd bigclock
+   
+2. Set the path to your Retro68 installation. Replace /path/to/retro68/toolchain with your actual path:
+      export RETRO68_ROOT=/path/to/retro68/toolchain
+   
+Building
+1. Create and enter the build directory:
+      rm -rf build && mkdir build && cd build
+   
+2. Run CMake with the Retro68 toolchain:
+      cmake -DCMAKE_TOOLCHAIN_FILE="$RETRO68_ROOT/m68k-apple-macos/cmake/retro68.toolchain.cmake" ..
+   
+3. Build the project:
+      make
+   
+The output will be in the build/ directory (.dsk disk image, .APPL application).
