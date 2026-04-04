@@ -1,6 +1,9 @@
 BigMaclock 1.0 - RetroTheory 2026
 ---------------------------------
 
+
+![alt text](https://github.com/retrotheory/BigMaclock/blob/main/bigmaclock.jpg "BigMaclock running on compact macs")
+
 BigMaclock is a classic full-screen desk clock for early Macintosh systems (optimized for the Macintosh compacts). 
 It provides a clean, high-contrast display that is easy to read from across a room.
 
