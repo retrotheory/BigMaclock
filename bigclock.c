@@ -34,7 +34,8 @@
 // --- Configuration ---
 
 // --- Layout & Scaling Globals ---
-// These variables are set dynamically in UpdateLayout() based on screen resolution
+// These variables are set dynamically in UpdateLayout() based on screen
+// resolution.
 int gPixelWidth = 8;
 int gPixelHeight = 8;
 #define DIGIT_WIDTH 11
@@ -66,7 +67,7 @@ void DrawSmallString(const char *s, int x, int y);
 
 /**
  * Draws a block of pixels at a specific row/col within a bitmap.
- * Each "pixelgroup" is scaled by w and h.
+ * Each "pixel" is scaled by w and h.
  * Insets the rectangle by 1px to create a subtle grid/border effect.
  */
 void DrawPixelGroup(int col, int row, int startX, int startY, int w, int h) {
@@ -80,7 +81,7 @@ void DrawPixelGroup(int col, int row, int startX, int startY, int w, int h) {
 }
 
 /**
- * Draws large digit from the `digits` array.
+ * Draws a single large digit from the `digits` array.
  */
 void DrawDigit(int n, int startX, int startY) {
   Rect r = {startY, startX, startY + gDigitPixelHeight,
@@ -96,7 +97,7 @@ void DrawDigit(int n, int startX, int startY) {
 }
 
 /**
- * Draws the colon (:) 
+ * Draws the colon (:) separator between hours and minutes.
  */
 void DrawColon(int startX, int startY, uint8_t visible) {
   Rect r = {startY, startX, startY + gDigitPixelHeight,
@@ -114,7 +115,7 @@ void DrawColon(int startX, int startY, uint8_t visible) {
 }
 
 /**
- * Draws a single character using the small font
+ * Draws a single character using the small font bitmaps.
  */
 void DrawSmallChar(char c, int x, int y) {
   const uint8_t *bitmap = NULL;
@@ -178,8 +179,8 @@ static void CopyPascalToCString(ConstStr255Param src, char *dst) {
 // --- Preferences & State ---
 
 /**
- * Structure for saving preferences to disk.
- * Version check.
+ * Record structure for saving preferences to disk.
+ * Uses a signature and version for compatibility checks.
  */
 typedef struct {
   char signature[4]; // 'BGCK'
@@ -200,7 +201,7 @@ const char kPrefsVersion = 4;
 
 // --- Globals ---
 
-// Alarm 
+// Alarm State
 Boolean gAlarmEnabled = false;
 int gAlarmHour = 0;
 int gAlarmMinute = 0;
@@ -210,13 +211,13 @@ Str255 gAlarmSoundName;
 Boolean gIs24Hour = true;
 Boolean gIsPM = false;
 
-// Display 
+// Display State
 Boolean gInverted = false;
 Boolean gDateFormatUS = false; // false = DD.MM (EU), true = MM.DD (US)
 Boolean gShowingFace = false;
 Boolean gGrayBackground = false;
 
-// Menu 
+// Menu State
 unsigned long gLastMenuTime = 0;
 unsigned long gLastMouseMoveTime = 0;
 Boolean gMenuVisible = false;
@@ -232,9 +233,9 @@ int g_prev_h1 = -1, g_prev_h2 = -1, g_prev_m1 = -1, g_prev_m2 = -1,
 int g_prev_day = -1, g_prev_month = -1, g_prev_dow = -1;
 WindowPtr gWindow;
 
-// Double Buffer 
-// Manage an offscreen GrafPort for the Macintosh Plus
-// No colour quickdraw here.
+// Double Buffer Globals
+// We manually manage an offscreen GrafPort for the Macintosh Plus
+// as it doesn't support the newer GWorld architecture.
 GrafPort gOffPort;
 BitMap gOffBits;
 Ptr gOffBaseAddr = NULL;
@@ -242,8 +243,8 @@ int gOffRowBytes = 0;
 Boolean gHasOffscreen = false;
 
 /**
- * Saves preferences to  "BigMaclock Prefs"
- * in the current volume
+ * Saves application preferences to a file named "BigMaclock Prefs"
+ * in the system folder (or current volume).
  */
 void SavePrefs() {
   short vRefNum;
@@ -300,7 +301,8 @@ void SavePrefs() {
 }
 
 /**
- * Loads application preferences from disk and check version
+ * Loads application preferences from disk.
+ * Performs validation on the signature and version.
  */
 void LoadPrefs() {
   short vRefNum;
@@ -365,7 +367,8 @@ void LoadPrefs() {
 
 /**
  * Initializes the offscreen buffer.
-  */
+ * Allocates memory for the bitmap and opens a custom GrafPort.
+ */
 void InitOffscreen(Rect bounds) {
   long screenSize = bounds.right * bounds.bottom / 8;
 
@@ -400,6 +403,8 @@ void DisposeOffscreen() {
 
 /**
  * Prepares the offscreen buffer for drawing.
+ * Sets the current port to the offscreen buffer and sets the
+ * background pattern based on the current theme (Black, Gray, or White).
  */
 void BeginDraw() {
   if (gHasOffscreen) {
@@ -418,7 +423,7 @@ void BeginDraw() {
 }
 
 /**
- * Makes main window active
+ * Restores the current port to the main window.
  */
 void EndDraw() {
   if (gHasOffscreen) {
@@ -427,7 +432,8 @@ void EndDraw() {
 }
 
 /**
- * Copies the contents of the offscreen buffer to the main window
+ * Copies the contents of the offscreen buffer to the main window.
+ * This is where the actual pixel data is pushed to the hardware.
  */
 void BlitToScreen() {
   if (gHasOffscreen && gOffBaseAddr) {
@@ -437,9 +443,6 @@ void BlitToScreen() {
   }
 }
 
-/**
- * draws the classic "Happy Mac" smiley face
- */
 void DrawHappyMac() {
   int facePixelSize = 12; // Larger pixels for the face
   int facePixelWidth = FACE_SIZE * facePixelSize;
@@ -480,16 +483,20 @@ void DrawAlarmIcon() {
 }
 
 /**
- * Calculates the horizontal and vertical positions of all digits based on the current window size and 12h/24h setting.
- * Dynamic Resolution Support
- *  Dectects if the screen is 640x480 (eg. if someone converted a Maclock to a minimac wich runs in 640x480 ) or
- *  the standard 512x342 (compact Macs).  Adjusts gPixelWidth/Height and gSmallPixelSize to scale the clock.
+ * Calculates the horizontal and vertical positions of all digits
+ * based on the current window size and 12h/24h setting.
+ *
+ * Dynamic Resolution Support:
+ * - Dectects if the screen is 640x480 (typical for Mac II/LC) or
+ *   the standard 512x342 (compact Macs).
+ * - Adjusts gPixelWidth/Height and gSmallPixelSize to scale the clock.
+ * - Recalculates all dependent pixel dimensions.
  */
 void UpdateLayout(Rect bounds) {
   int screenWidth = bounds.right - bounds.left;
   int screenHeight = bounds.bottom - bounds.top;
 
-  // 640x480 check
+  // Dynamic Scaling Detection
   if (screenWidth >= 640 && screenHeight >= 480) {
     gPixelWidth = 10;
     gPixelHeight = 10;
@@ -497,7 +504,7 @@ void UpdateLayout(Rect bounds) {
     gSmallPixelSize = 10;
     gSmallSpacing = 10;
   } else {
-    // Default
+    // Default (Mac Plus / 512x342)
     gPixelWidth = 8;
     gPixelHeight = 8;
     gSpaceBetweenDigits = 24;
@@ -505,7 +512,7 @@ void UpdateLayout(Rect bounds) {
     gSmallSpacing = 8;
   }
 
-  // Recalculate sizes and spacing
+  // Recalculate derived sizes
   gDigitPixelWidth = DIGIT_WIDTH * gPixelWidth;
   gDigitPixelHeight = DIGIT_HEIGHT * gPixelHeight;
   gColonPixelWidth = COLON_WIDTH * gPixelWidth;
@@ -515,7 +522,7 @@ void UpdateLayout(Rect bounds) {
   int digitsWidth =
       (4 * gDigitPixelWidth) + gColonPixelWidth + (4 * gSpaceBetweenDigits);
   int ampmWidth = (5 * gSmallPixelSize);
-  int ampmSpacing = -(gSmallPixelSize * 4); 
+  int ampmSpacing = -(gSmallPixelSize * 4); // Adjusted spacing
   int totalWidth = digitsWidth;
   if (!gIs24Hour)
     totalWidth += ampmWidth + ampmSpacing;
@@ -535,7 +542,7 @@ void UpdateLayout(Rect bounds) {
 }
 
 /**
- * Renders the AM/PM in 12-hour mode.
+ * Renders the AM/PM indicator for 12-hour mode.
  */
 void DrawAMPM(Boolean isPM, int x, int y) {
   Rect r = {y, x, y + 2 * gSmallPixelHeight + 8, x + 5 * gSmallPixelSize};
@@ -545,8 +552,8 @@ void DrawAMPM(Boolean isPM, int x, int y) {
 }
 
 /**
- *  Fake rounded corners to recreate the typical Macintosh corner
- */  
+ * Draws decorative black corners on the full-screen display.
+ */
 void DrawCorners() {
   static const short cornerData[8] = {8, 6, 4, 3, 2, 2, 1, 1};
   short screenWidth = gWindow->portRect.right;
@@ -580,7 +587,10 @@ int GetDateStringWidth(const char *buf) {
 }
 
 /**
- * Draw to offscreen buffer, clear main screen, get time , draw time and date, or draw happymac, and then copy to main window
+ * The main rendering entry point.
+ * Clears the screen and draws all elements: hours, minutes, colon,
+ * date, day of week, and alarm icon.
+ * Uses double-buffering (BeginDraw/EndDraw/BlitToScreen).
  */
 void RedrawAll() {
   BeginDraw();
@@ -663,7 +673,9 @@ void RedrawAll() {
 }
 
 /**
- * Reveals the menu bar. or hides automatically after mouse movement.
+ * Reveals the menu bar.
+ * If sticky is true, it remains until a manual hide action.
+ * Otherwise, it hides automatically after mouse movement.
  */
 void ShowMenu(Boolean sticky) {
   if (!gMenuVisible) {
@@ -677,8 +689,8 @@ void ShowMenu(Boolean sticky) {
 }
 
 /**
- * Hide the menu bar area with the current background colour 
- * White or black when inverted. 
+ * Custom function to paint the menu bar area with the current theme
+ * when the system draws it, to maintain a seamless look.
  */
 void UpdateMenuBarBackground() {
   GrafPtr oldPort;
@@ -715,7 +727,7 @@ void UpdateMenuBarBackground() {
 }
 
 /**
- * Auto hides the menu bar 
+ * Hides the menu bar and restores the full-screen clock look.
  */
 void HideMenu() {
   if (gMenuVisible) {
@@ -729,10 +741,6 @@ void HideMenu() {
   }
 }
 
-
-/**
- *  Allows alarm time to be entered manually or up down keys
- */
 pascal Boolean AlarmFilter(DialogPtr d, EventRecord *event, short *itemHit) {
   if (event->what == keyDown || event->what == autoKey) {
     char key = event->message & charCodeMask;
@@ -771,18 +779,15 @@ pascal Boolean AlarmFilter(DialogPtr d, EventRecord *event, short *itemHit) {
         sprintf(buf, "%02d", val);
         MyCopyCStringToPascal(buf, macStr);
         SetDialogItemText(itemH, macStr);
-        SelectDialogItemText(d, field, 0, 32767); 
-        *itemHit = 0;                             
-        return true;                              
+        SelectDialogItemText(d, field, 0, 32767); // Select all
+        *itemHit = 0;                             // Avoid garbage hit
+        return true;                              // Handled
       }
     }
   }
   return false;
 }
 
-/**
- *  Sound selection 
- */
 pascal void DrawSoundDropdown(WindowPtr theWindow, short itemNo) {
   short itemType;
   Handle itemH;
@@ -820,7 +825,8 @@ pascal void DrawSoundDropdown(WindowPtr theWindow, short itemNo) {
 }
 
 /**
- * Displays the preferences input and updates state and saves preferences on OK
+ * Displays the preferences dialog and handles user input.
+ * Updates global state and saves preferences on "OK".
  */
 void DoPreferences() {
   if (gCursorHidden) {
@@ -876,11 +882,11 @@ void DoPreferences() {
 
   while (itemHit != 1 && itemHit != 2) {
     ModalDialog(AlarmFilter, &itemHit);
-    if (itemHit == 12 || itemHit == 21 || itemHit == 26) { 
+    if (itemHit == 12 || itemHit == 21 || itemHit == 26) { // Toggle checkboxes
       GetDialogItem(d, itemHit, &itemType, &itemH, &itemR);
       SetControlValue((ControlHandle)itemH,
                       !GetControlValue((ControlHandle)itemH));
-    } else if (itemHit == 14) { 
+    } else if (itemHit == 14) { // Sound Dropdown Button
       MenuHandle sndMenu = NewMenu(200, "\pSound");
       int count = CountResources('snd ');
       int menuIdx = 1;
@@ -954,12 +960,12 @@ void DoPreferences() {
       MyCopyCStringToPascal(buf, macStr);
       SetDialogItemText(itemH, macStr);
       SelectDialogItemText(d, field, 0, 32767);
-    } else if (itemHit == 18 || itemHit == 19) { 
+    } else if (itemHit == 18 || itemHit == 19) { // Format radio buttons
       for (int i = 0; i < 2; i++) {
         GetDialogItem(d, 18 + i, &itemType, &itemH, &itemR);
         SetControlValue((ControlHandle)itemH, (18 + i == itemHit));
       }
-    } else if (itemHit == 23 || itemHit == 24) { 
+    } else if (itemHit == 23 || itemHit == 24) { // Date order radio buttons
       for (int i = 0; i < 2; i++) {
         GetDialogItem(d, 23 + i, &itemType, &itemH, &itemR);
         SetControlValue((ControlHandle)itemH, (23 + i == itemHit));
@@ -967,7 +973,7 @@ void DoPreferences() {
     }
   }
 
-  if (itemHit == 1) { 
+  if (itemHit == 1) { // OK
     GetDialogItem(d, 4, &itemType, &itemH, &itemR);
     GetDialogItemText(itemH, macStr);
     CopyPascalToCString(macStr, buf);
@@ -1072,7 +1078,10 @@ void ShowStartupScreen() {
   ReleaseResource((Handle)logo);
 }
 
-
+/**
+ * Entry point. Initializes Macintosh managers, sets up menus,
+ * creates the full-screen window, and runs the main event loop.
+ */
 int main(int argc, char **argv) {
   InitGraf(&qd.thePort);
   InitFonts();
@@ -1209,14 +1218,14 @@ int main(int argc, char **argv) {
       }
     }
 
-    // Auto-hide cursor after 2 seconds 
+    // Auto-hide cursor after 2 seconds when menu is hidden and mouse idle
     if (!gMenuVisible && !gCursorHidden &&
         (TickCount() - gLastMouseMoveTime > 120)) {
       HideCursor();
       gCursorHidden = true;
     }
 
-    // Auto-hide menu bar after 4 seconds of idle 
+    // Auto-hide menu bar after 4 seconds of idle (sticky or not)
     if (gMenuVisible && (TickCount() - gLastMenuTime > 240)) {
       HideMenu();
     }
