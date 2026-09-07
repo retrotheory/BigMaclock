@@ -61,6 +61,7 @@ const char *days[] = {"SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"};
 void BeginDraw();
 void EndDraw();
 void BlitToScreen();
+void RestoreWMgrPort();
 void RedrawAll();
 void UpdateLayout(Rect bounds);
 void DrawSmallString(const char *s, int x, int y);
@@ -432,6 +433,23 @@ void EndDraw() {
 }
 
 /**
+ * Resets the Window Manager port's pen and background to defaults. This
+ * port is shared with the whole system; anything left non-default here
+ * (e.g. a black background pattern) corrupts menus and window frames for
+ * every application after we quit.
+ */
+void RestoreWMgrPort() {
+  GrafPtr oldPort, wmPort;
+  GetPort(&oldPort);
+  GetWMgrPort(&wmPort);
+  SetPort(wmPort);
+  PenNormal();
+  BackPat(&qd.white);
+  SetOrigin(0, 0);
+  SetPort(oldPort);
+}
+
+/**
  * Copies the contents of the offscreen buffer to the main window.
  * This is where the actual pixel data is pushed to the hardware.
  */
@@ -699,16 +717,23 @@ void UpdateMenuBarBackground() {
   GetWMgrPort(&wmPort);
   SetPort(wmPort);
 
+  // Paint with FillRect rather than BackPat + EraseRect: the Window
+  // Manager port is shared with the whole system, and leaving its
+  // background pattern set to black makes menus and window frames erase
+  // to black after we quit.
+  const Pattern *bg;
   if (gInverted) {
-    BackPat(&qd.black);
+    bg = &qd.black;
   } else if (gGrayBackground) {
-    BackPat(&qd.gray);
+    bg = &qd.gray;
   } else {
-    BackPat(&qd.white);
+    bg = &qd.white;
   }
 
   Rect r = {0, 0, gOrigMBarHeight, qd.screenBits.bounds.right};
-  EraseRect(&r);
+  FillRect(&r, bg);
+
+  RestoreWMgrPort();
 
   int cornerData[8] = {8, 6, 4, 3, 2, 2, 1, 1};
 
@@ -910,8 +935,13 @@ void DoPreferences() {
       InsertMenu(sndMenu, -1);
 
       GetDialogItem(d, 14, &itemType, &itemH, &itemR);
-      Point pt = {itemR.top, itemR.left};
-      LocalToGlobal(&pt);
+      // Global position = dialog's content region (global) + item offset.
+      // Done by hand rather than LocalToGlobal so it can't depend on
+      // whichever port happens to be current.
+      Rect content = (**((WindowPeek)d)->contRgn).rgnBBox;
+      Point pt;
+      pt.v = content.top + itemR.top;
+      pt.h = content.left + itemR.left;
 
       long result = PopUpMenuSelect(sndMenu, pt.v, pt.h, 0);
       short menuItem = LoWord(result);
@@ -1350,5 +1380,11 @@ int main(int argc, char **argv) {
 
   DisposeOffscreen();
   DisposeWindow(gWindow);
+
+  // Restore the menu bar height in case we quit with it hidden, put the
+  // shared Window Manager port back to its defaults, and repaint.
+  *(short *)0x0BAA = gOrigMBarHeight;
+  RestoreWMgrPort();
+  DrawMenuBar();
   return 0;
 }
