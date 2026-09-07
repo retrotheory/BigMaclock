@@ -37,7 +37,7 @@ resource 'MBAR' (128) {
 };
 
 resource 'DLOG' (128) {
-    { 40, 80, 260, 380 },
+    { 40, 80, 282, 380 },
     dBoxProc,
     visible,
     noGoAway,
@@ -49,8 +49,8 @@ resource 'DLOG' (128) {
 
 resource 'DITL' (128) {
     {
-        { 190, 220, 210, 280 }, Button { enabled, "OK" };               /* 1 */
-        { 190, 20, 210, 80 }, Button { enabled, "Cancel" };              /* 2 */
+        { 212, 220, 232, 280 }, Button { enabled, "OK" };               /* 1 */
+        { 212, 20, 232, 80 }, Button { enabled, "Cancel" };              /* 2 */
         { 8, 20, 24, 100 }, StaticText { disabled, "Alarm Time:" };      /* 3 */
         { 8, 105, 24, 135 }, EditText { enabled, "00" };                 /* 4 - HH */
         { 4, 140, 15, 160 }, Button { enabled, "+" };                    /* 5 - HH Up */
@@ -77,6 +77,8 @@ resource 'DITL' (128) {
         { 140, 135, 154, 160 }, CheckBox { enabled, "" };                  /* 26 */
         { 162, 20, 176, 130 }, StaticText { disabled, "Show Seconds:" };   /* 27 */
         { 162, 135, 176, 160 }, CheckBox { enabled, "" };                  /* 28 */
+        { 186, 20, 200, 130 }, StaticText { disabled, "Flip Colors:" };    /* 29 */
+        { 184, 135, 204, 235 }, UserItem { enabled };                      /* 30 */
     }
 };
 
