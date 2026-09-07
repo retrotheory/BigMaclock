@@ -75,6 +75,8 @@ resource 'DITL' (128) {
         { 118, 190, 132, 260 }, RadioButton { enabled, "MM.DD" };         /* 24 */
         { 140, 20, 154, 130 }, StaticText { disabled, "Gray Background:" }; /* 25 */
         { 140, 135, 154, 160 }, CheckBox { enabled, "" };                  /* 26 */
+        { 162, 20, 176, 130 }, StaticText { disabled, "Show Seconds:" };   /* 27 */
+        { 162, 135, 176, 160 }, CheckBox { enabled, "" };                  /* 28 */
     }
 };
 

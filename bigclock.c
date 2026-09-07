@@ -64,6 +64,7 @@ void BlitToScreen();
 void RestoreWMgrPort();
 void RedrawAll();
 void UpdateLayout(Rect bounds);
+void DrawSeconds(int sec, Rect bounds);
 void DrawSmallString(const char *s, int x, int y);
 
 /**
@@ -195,10 +196,11 @@ typedef struct {
   Boolean dateFormatUS;
   Boolean grayBackground;
   Str255 alarmSoundName; // v4+
+  Boolean showSeconds;   // v5+
 } PrefsRecord;
 
 const char kPrefsSignature[4] = {'B', 'G', 'C', 'K'};
-const char kPrefsVersion = 4;
+const char kPrefsVersion = 5;
 
 // --- Globals ---
 
@@ -217,6 +219,7 @@ Boolean gInverted = false;
 Boolean gDateFormatUS = false; // false = DD.MM (EU), true = MM.DD (US)
 Boolean gShowingFace = false;
 Boolean gGrayBackground = false;
+Boolean gShowSeconds = false;
 
 // Menu State
 unsigned long gLastMenuTime = 0;
@@ -232,6 +235,7 @@ int g_h1_x, g_h2_x, g_col_x, g_m1_x, g_m2_x;
 int g_prev_h1 = -1, g_prev_h2 = -1, g_prev_m1 = -1, g_prev_m2 = -1,
     g_prev_blink = -1;
 int g_prev_day = -1, g_prev_month = -1, g_prev_dow = -1;
+int g_prev_sec = -1;
 WindowPtr gWindow;
 
 // Double Buffer Globals
@@ -294,6 +298,7 @@ void SavePrefs() {
 
   prefs.grayBackground = gGrayBackground;
   memcpy(prefs.alarmSoundName, gAlarmSoundName, 256);
+  prefs.showSeconds = gShowSeconds;
 
   long count = sizeof(PrefsRecord);
   err = FSWrite(refNum, &count, &prefs);
@@ -326,11 +331,14 @@ void LoadPrefs() {
     return;
 
   PrefsRecord prefs;
+  memset(&prefs, 0, sizeof(prefs));
   long count = sizeof(PrefsRecord);
   err = FSRead(refNum, &count, &prefs);
   FSClose(refNum);
 
-  if (err != noErr)
+  // A prefs file written by an older version is shorter than the current
+  // record; FSRead returns eofErr but has still filled in what it could.
+  if (err != noErr && err != eofErr)
     return;
 
   if (prefs.signature[0] != kPrefsSignature[0] ||
@@ -352,6 +360,10 @@ void LoadPrefs() {
 
   if (prefs.version >= 3) {
     gGrayBackground = prefs.grayBackground;
+  }
+
+  if (prefs.version >= 5) {
+    gShowSeconds = prefs.showSeconds;
   }
 
   if (prefs.version >= 4) {
@@ -617,6 +629,7 @@ void RedrawAll() {
   DrawCorners();
 
   DrawSmallString("20.5C", 20, 34);
+  g_prev_sec = -1;
 
   if (gShowingFace) {
     DrawHappyMac();
@@ -670,6 +683,11 @@ void RedrawAll() {
   g_prev_m2 = m2;
   g_prev_blink = blink;
 
+  if (gShowSeconds) {
+    g_prev_sec = now % 60;
+    DrawSeconds(g_prev_sec, bounds);
+  }
+
   // Draw date/day
   DateTimeRec date;
   SecondsToDate(now, &date);
@@ -688,6 +706,22 @@ void RedrawAll() {
 
   EndDraw();
   BlitToScreen();
+}
+
+/**
+ * Draws (or erases and redraws) the two-digit seconds display in the
+ * top-right corner, mirroring the "20.5C" readout at top-left.
+ * Must be called between BeginDraw() and EndDraw().
+ */
+void DrawSeconds(int sec, Rect bounds) {
+  int charAdv = 5 * gSmallPixelSize + gSmallSpacing;
+  int width = charAdv * 2 - gSmallSpacing;
+  int x = bounds.right - 20 - width;
+  int y = 34;
+  Rect r = {y, x, y + gSmallPixelHeight, x + width};
+  EraseRect(&r);
+  DrawSmallChar((sec / 10) + '0', x, y);
+  DrawSmallChar((sec % 10) + '0', x + charAdv, y);
 }
 
 /**
@@ -905,9 +939,14 @@ void DoPreferences() {
   GetDialogItem(d, 26, &itemType, &itemH, &itemR);
   SetControlValue((ControlHandle)itemH, gGrayBackground);
 
+  // Set show seconds selection
+  GetDialogItem(d, 28, &itemType, &itemH, &itemR);
+  SetControlValue((ControlHandle)itemH, gShowSeconds);
+
   while (itemHit != 1 && itemHit != 2) {
     ModalDialog(AlarmFilter, &itemHit);
-    if (itemHit == 12 || itemHit == 21 || itemHit == 26) { // Toggle checkboxes
+    if (itemHit == 12 || itemHit == 21 || itemHit == 26 ||
+        itemHit == 28) { // Toggle checkboxes
       GetDialogItem(d, itemHit, &itemType, &itemH, &itemR);
       SetControlValue((ControlHandle)itemH,
                       !GetControlValue((ControlHandle)itemH));
@@ -1028,6 +1067,9 @@ void DoPreferences() {
 
     GetDialogItem(d, 26, &itemType, &itemH, &itemR);
     gGrayBackground = GetControlValue((ControlHandle)itemH);
+
+    GetDialogItem(d, 28, &itemType, &itemH, &itemR);
+    gShowSeconds = GetControlValue((ControlHandle)itemH);
 
     UpdateLayout(gWindow->portRect);
     RedrawAll();
@@ -1345,6 +1387,13 @@ int main(int argc, char **argv) {
       if (m2 != g_prev_m2) {
         DrawDigit(m2, g_m2_x, g_startY);
         g_prev_m2 = m2;
+      }
+      if (gShowSeconds) {
+        int sec = now % 60;
+        if (sec != g_prev_sec) {
+          DrawSeconds(sec, bounds);
+          g_prev_sec = sec;
+        }
       }
 
       if (now % 60 == 0 || g_prev_day == -1) {
