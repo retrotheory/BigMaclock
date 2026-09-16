@@ -61,8 +61,12 @@ const char *days[] = {"SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"};
 void BeginDraw();
 void EndDraw();
 void BlitToScreen();
+void RestoreWMgrPort();
 void RedrawAll();
 void UpdateLayout(Rect bounds);
+void DrawSeconds(int sec, Rect bounds);
+Boolean ApplyInversionSchedule(unsigned long now);
+void EraseWholePort();
 void DrawSmallString(const char *s, int x, int y);
 
 /**
@@ -194,10 +198,12 @@ typedef struct {
   Boolean dateFormatUS;
   Boolean grayBackground;
   Str255 alarmSoundName; // v4+
+  Boolean showSeconds;   // v5+
+  char flipInterval;     // v6+: auto-invert period in minutes (0 = off)
 } PrefsRecord;
 
 const char kPrefsSignature[4] = {'B', 'G', 'C', 'K'};
-const char kPrefsVersion = 4;
+const char kPrefsVersion = 6;
 
 // --- Globals ---
 
@@ -212,10 +218,14 @@ Boolean gIs24Hour = true;
 Boolean gIsPM = false;
 
 // Display State
-Boolean gInverted = false;
+Boolean gInverted = false;   // Effective state (base XOR schedule phase)
+Boolean gInvertBase = false; // User's chosen base inversion (saved in prefs)
+int gFlipInterval = 0;       // Auto-invert every N minutes (0 = off)
+int gShiftX = 0, gShiftY = 0; // Pixel-shift offset for burn-in protection
 Boolean gDateFormatUS = false; // false = DD.MM (EU), true = MM.DD (US)
 Boolean gShowingFace = false;
 Boolean gGrayBackground = false;
+Boolean gShowSeconds = false;
 
 // Menu State
 unsigned long gLastMenuTime = 0;
@@ -231,6 +241,7 @@ int g_h1_x, g_h2_x, g_col_x, g_m1_x, g_m2_x;
 int g_prev_h1 = -1, g_prev_h2 = -1, g_prev_m1 = -1, g_prev_m2 = -1,
     g_prev_blink = -1;
 int g_prev_day = -1, g_prev_month = -1, g_prev_dow = -1;
+int g_prev_sec = -1;
 WindowPtr gWindow;
 
 // Double Buffer Globals
@@ -288,11 +299,13 @@ void SavePrefs() {
   prefs.alarmMinute = gAlarmMinute;
   prefs.alarmSoundType = gAlarmSoundType;
   prefs.is24Hour = gIs24Hour;
-  prefs.inverted = gInverted;
+  prefs.inverted = gInvertBase;
   prefs.dateFormatUS = gDateFormatUS;
 
   prefs.grayBackground = gGrayBackground;
   memcpy(prefs.alarmSoundName, gAlarmSoundName, 256);
+  prefs.showSeconds = gShowSeconds;
+  prefs.flipInterval = gFlipInterval;
 
   long count = sizeof(PrefsRecord);
   err = FSWrite(refNum, &count, &prefs);
@@ -325,11 +338,14 @@ void LoadPrefs() {
     return;
 
   PrefsRecord prefs;
+  memset(&prefs, 0, sizeof(prefs));
   long count = sizeof(PrefsRecord);
   err = FSRead(refNum, &count, &prefs);
   FSClose(refNum);
 
-  if (err != noErr)
+  // A prefs file written by an older version is shorter than the current
+  // record; FSRead returns eofErr but has still filled in what it could.
+  if (err != noErr && err != eofErr)
     return;
 
   if (prefs.signature[0] != kPrefsSignature[0] ||
@@ -346,11 +362,20 @@ void LoadPrefs() {
   gAlarmMinute = prefs.alarmMinute;
   gAlarmSoundType = prefs.alarmSoundType;
   gIs24Hour = prefs.is24Hour;
-  gInverted = prefs.inverted;
+  gInvertBase = prefs.inverted;
+  gInverted = gInvertBase;
   gDateFormatUS = prefs.dateFormatUS;
 
   if (prefs.version >= 3) {
     gGrayBackground = prefs.grayBackground;
+  }
+
+  if (prefs.version >= 5) {
+    gShowSeconds = prefs.showSeconds;
+  }
+
+  if (prefs.version >= 6) {
+    gFlipInterval = prefs.flipInterval;
   }
 
   if (prefs.version >= 4) {
@@ -409,6 +434,10 @@ void DisposeOffscreen() {
 void BeginDraw() {
   if (gHasOffscreen) {
     SetPort(&gOffPort);
+    // Pixel shift: every drawing call lands gShiftX/gShiftY away from
+    // where it asks to be, so the whole face wanders a few pixels over
+    // the course of the flip schedule.
+    SetOrigin(-gShiftX, -gShiftY);
     if (gInverted) {
       BackPat(&qd.black);
       PenPat(&qd.white);
@@ -429,6 +458,33 @@ void EndDraw() {
   if (gHasOffscreen) {
     SetPort(gWindow);
   }
+}
+
+/**
+ * Resets the Window Manager port's pen and background to defaults. This
+ * port is shared with the whole system; anything left non-default here
+ * (e.g. a black background pattern) corrupts menus and window frames for
+ * every application after we quit.
+ */
+void RestoreWMgrPort() {
+  GrafPtr oldPort, wmPort;
+  GetPort(&oldPort);
+  GetWMgrPort(&wmPort);
+  SetPort(wmPort);
+  PenNormal();
+  BackPat(&qd.white);
+  SetOrigin(0, 0);
+  SetPort(oldPort);
+}
+
+/**
+ * Erases the entire current port. Uses the port's own portRect rather
+ * than the window's, so it stays correct when the origin is shifted.
+ */
+void EraseWholePort() {
+  GrafPtr port;
+  GetPort(&port);
+  EraseRect(&port->portRect);
 }
 
 /**
@@ -453,7 +509,7 @@ void DrawHappyMac() {
   int startY =
       (gWindow->portRect.bottom - gWindow->portRect.top - facePixelHeight) / 2;
 
-  EraseRect(&gWindow->portRect);
+  EraseWholePort();
 
   for (int row = 0; row < FACE_SIZE; row++) {
     uint32_t rowData = faceBitmap[row];
@@ -595,10 +651,18 @@ int GetDateStringWidth(const char *buf) {
 void RedrawAll() {
   BeginDraw();
 
-  EraseRect(&gWindow->portRect);
+  EraseWholePort();
+
+  // Corner decorations hug the physical screen edges, so draw them
+  // unshifted.
+  if (gHasOffscreen)
+    SetOrigin(0, 0);
   DrawCorners();
+  if (gHasOffscreen)
+    SetOrigin(-gShiftX, -gShiftY);
 
   DrawSmallString("20.5C", 20, 34);
+  g_prev_sec = -1;
 
   if (gShowingFace) {
     DrawHappyMac();
@@ -652,6 +716,11 @@ void RedrawAll() {
   g_prev_m2 = m2;
   g_prev_blink = blink;
 
+  if (gShowSeconds) {
+    g_prev_sec = now % 60;
+    DrawSeconds(g_prev_sec, bounds);
+  }
+
   // Draw date/day
   DateTimeRec date;
   SecondsToDate(now, &date);
@@ -670,6 +739,64 @@ void RedrawAll() {
 
   EndDraw();
   BlitToScreen();
+}
+
+/**
+ * Draws (or erases and redraws) the two-digit seconds display in the
+ * top-right corner, mirroring the "20.5C" readout at top-left.
+ * Must be called between BeginDraw() and EndDraw().
+ */
+void DrawSeconds(int sec, Rect bounds) {
+  int charAdv = 5 * gSmallPixelSize + gSmallSpacing;
+  int width = charAdv * 2 - gSmallSpacing;
+  int x = bounds.right - 20 - width;
+  int y = 34;
+  Rect r = {y, x, y + gSmallPixelHeight, x + width};
+  EraseRect(&r);
+  DrawSmallChar((sec / 10) + '0', x, y);
+  DrawSmallChar((sec % 10) + '0', x + charAdv, y);
+}
+
+/**
+ * Phosphor protection: flips the display inversion on a fixed schedule so
+ * no pixel stays lit (or dark) all day. The phase is derived from the
+ * wall clock, so it needs no timer state and survives restarts:
+ *   interval N < 60  -> inverted when (minute-of-day / N) is odd
+ *   interval 60      -> inverted when the hour is odd
+ * The user's base setting (Invert Display) is XORed with the phase.
+ *
+ * On each step the whole face is also nudged by a few pixels (cycling
+ * through kShiftTable) so digit edges don't sit on the same phosphor
+ * all day. Margins are 20 px, so offsets stay well inside the screen.
+ *
+ * Returns true if anything changed (caller should redraw).
+ */
+static const short kShiftTable[][2] = {{0, 0},  {4, 3},  {-3, 5}, {5, -3},
+                                       {-5, -4}, {2, -5}, {-4, 2}, {3, 4}};
+#define kShiftSteps 8
+
+Boolean ApplyInversionSchedule(unsigned long now) {
+  Boolean phase = false;
+  int shiftX = 0, shiftY = 0;
+  if (gFlipInterval > 0) {
+    unsigned long minuteOfDay = (now % 86400) / 60;
+    unsigned long step;
+    if (gFlipInterval >= 60)
+      step = minuteOfDay / 60;
+    else
+      step = minuteOfDay / gFlipInterval;
+    phase = (step & 1) != 0;
+    shiftX = kShiftTable[step % kShiftSteps][0];
+    shiftY = kShiftTable[step % kShiftSteps][1];
+  }
+  Boolean want = gInvertBase ? !phase : phase;
+  if (want != gInverted || shiftX != gShiftX || shiftY != gShiftY) {
+    gInverted = want;
+    gShiftX = shiftX;
+    gShiftY = shiftY;
+    return true;
+  }
+  return false;
 }
 
 /**
@@ -699,16 +826,23 @@ void UpdateMenuBarBackground() {
   GetWMgrPort(&wmPort);
   SetPort(wmPort);
 
+  // Paint with FillRect rather than BackPat + EraseRect: the Window
+  // Manager port is shared with the whole system, and leaving its
+  // background pattern set to black makes menus and window frames erase
+  // to black after we quit.
+  const Pattern *bg;
   if (gInverted) {
-    BackPat(&qd.black);
+    bg = &qd.black;
   } else if (gGrayBackground) {
-    BackPat(&qd.gray);
+    bg = &qd.gray;
   } else {
-    BackPat(&qd.white);
+    bg = &qd.white;
   }
 
   Rect r = {0, 0, gOrigMBarHeight, qd.screenBits.bounds.right};
-  EraseRect(&r);
+  FillRect(&r, bg);
+
+  RestoreWMgrPort();
 
   int cornerData[8] = {8, 6, 4, 3, 2, 2, 1, 1};
 
@@ -824,6 +958,51 @@ pascal void DrawSoundDropdown(WindowPtr theWindow, short itemNo) {
   LineTo(triX + 4, triY + 4);
 }
 
+static int gFlipDlgValue = 0; // Pending selection while the dialog is open
+static const int kFlipChoices[] = {0, 1, 5, 10, 30, 60};
+#define kFlipChoiceCount 6
+
+static void FlipIntervalName(int minutes, Str255 out) {
+  char buf[16];
+  if (minutes <= 0)
+    sprintf(buf, "Never");
+  else
+    sprintf(buf, "%d min", minutes);
+  MyCopyCStringToPascal(buf, out);
+}
+
+pascal void DrawFlipDropdown(WindowPtr theWindow, short itemNo) {
+  short itemType;
+  Handle itemH;
+  Rect itemR;
+  Str255 label;
+  GetDialogItem((DialogPtr)theWindow, itemNo, &itemType, &itemH, &itemR);
+
+  EraseRect(&itemR);
+
+  Rect boxR = itemR;
+  boxR.right -= 1;
+  boxR.bottom -= 1;
+  FrameRect(&boxR);
+
+  MoveTo(boxR.left + 2, boxR.bottom);
+  LineTo(boxR.right, boxR.bottom);
+  MoveTo(boxR.right, boxR.top + 2);
+  LineTo(boxR.right, boxR.bottom - 1);
+
+  MoveTo(boxR.left + 5, boxR.bottom - 5);
+  TextFont(0);
+  FlipIntervalName(gFlipDlgValue, label);
+  DrawString(label);
+
+  int triX = boxR.right - 14;
+  int triY = boxR.top + (boxR.bottom - boxR.top) / 2 - 1;
+  for (int i = 0; i < 5; i++) {
+    MoveTo(triX + i, triY + i);
+    LineTo(triX + 8 - i, triY + i);
+  }
+}
+
 /**
  * Displays the preferences dialog and handles user input.
  * Updates global state and saves preferences on "OK".
@@ -866,9 +1045,9 @@ void DoPreferences() {
   GetDialogItem(d, 19, &itemType, &itemH, &itemR);
   SetControlValue((ControlHandle)itemH, gIs24Hour);
 
-  // Set invert selection
+  // Set invert selection (base preference, not the scheduled state)
   GetDialogItem(d, 21, &itemType, &itemH, &itemR);
-  SetControlValue((ControlHandle)itemH, gInverted);
+  SetControlValue((ControlHandle)itemH, gInvertBase);
 
   // Set date order selection
   GetDialogItem(d, 23, &itemType, &itemH, &itemR);
@@ -880,9 +1059,20 @@ void DoPreferences() {
   GetDialogItem(d, 26, &itemType, &itemH, &itemR);
   SetControlValue((ControlHandle)itemH, gGrayBackground);
 
+  // Set show seconds selection
+  GetDialogItem(d, 28, &itemType, &itemH, &itemR);
+  SetControlValue((ControlHandle)itemH, gShowSeconds);
+
+  // Set flip-interval dropdown UserItem
+  gFlipDlgValue = gFlipInterval;
+  GetDialogItem(d, 30, &itemType, &itemH, &itemR);
+  SetDialogItem(d, 30, itemType, (Handle)NewUserItemUPP(DrawFlipDropdown),
+                &itemR);
+
   while (itemHit != 1 && itemHit != 2) {
     ModalDialog(AlarmFilter, &itemHit);
-    if (itemHit == 12 || itemHit == 21 || itemHit == 26) { // Toggle checkboxes
+    if (itemHit == 12 || itemHit == 21 || itemHit == 26 ||
+        itemHit == 28) { // Toggle checkboxes
       GetDialogItem(d, itemHit, &itemType, &itemH, &itemR);
       SetControlValue((ControlHandle)itemH,
                       !GetControlValue((ControlHandle)itemH));
@@ -910,8 +1100,13 @@ void DoPreferences() {
       InsertMenu(sndMenu, -1);
 
       GetDialogItem(d, 14, &itemType, &itemH, &itemR);
-      Point pt = {itemR.top, itemR.left};
-      LocalToGlobal(&pt);
+      // Global position = dialog's content region (global) + item offset.
+      // Done by hand rather than LocalToGlobal so it can't depend on
+      // whichever port happens to be current.
+      Rect content = (**((WindowPeek)d)->contRgn).rgnBBox;
+      Point pt;
+      pt.v = content.top + itemR.top;
+      pt.h = content.left + itemR.left;
 
       long result = PopUpMenuSelect(sndMenu, pt.v, pt.h, 0);
       short menuItem = LoWord(result);
@@ -933,6 +1128,40 @@ void DoPreferences() {
 
       DeleteMenu(200);
       DisposeMenu(sndMenu);
+    } else if (itemHit == 30) { // Flip interval dropdown
+      MenuHandle flipMenu = NewMenu(201, "\pFlip");
+      for (int i = 0; i < kFlipChoiceCount; i++) {
+        Str255 name;
+        FlipIntervalName(kFlipChoices[i], name);
+        AppendMenu(flipMenu, "\p ");
+        SetMenuItemText(flipMenu, i + 1, name);
+        if (kFlipChoices[i] == gFlipDlgValue)
+          CheckItem(flipMenu, i + 1, true);
+      }
+      InsertMenu(flipMenu, -1);
+
+      GetDialogItem(d, 30, &itemType, &itemH, &itemR);
+      // Global position = dialog's content region (global) + item offset.
+      // Done by hand rather than LocalToGlobal so it can't depend on
+      // whichever port happens to be current.
+      Rect content = (**((WindowPeek)d)->contRgn).rgnBBox;
+      Point pt;
+      pt.v = content.top + itemR.top;
+      pt.h = content.left + itemR.left;
+
+      long result = PopUpMenuSelect(flipMenu, pt.v, pt.h, 0);
+      short menuItem = LoWord(result);
+      if (menuItem >= 1 && menuItem <= kFlipChoiceCount) {
+        gFlipDlgValue = kFlipChoices[menuItem - 1];
+        GrafPtr oldPort;
+        GetPort(&oldPort);
+        SetPort((GrafPtr)d);
+        DrawFlipDropdown(d, 30);
+        SetPort(oldPort);
+      }
+
+      DeleteMenu(201);
+      DisposeMenu(flipMenu);
     } else if (itemHit == 5 || itemHit == 6 || itemHit == 9 || itemHit == 10) {
       // Arrow buttons
       int field = (itemHit <= 6) ? 4 : 8;
@@ -991,13 +1220,23 @@ void DoPreferences() {
     gIs24Hour = !GetControlValue((ControlHandle)itemH);
 
     GetDialogItem(d, 21, &itemType, &itemH, &itemR);
-    gInverted = GetControlValue((ControlHandle)itemH);
+    gInvertBase = GetControlValue((ControlHandle)itemH);
 
     GetDialogItem(d, 24, &itemType, &itemH, &itemR);
     gDateFormatUS = GetControlValue((ControlHandle)itemH);
 
     GetDialogItem(d, 26, &itemType, &itemH, &itemR);
     gGrayBackground = GetControlValue((ControlHandle)itemH);
+
+    GetDialogItem(d, 28, &itemType, &itemH, &itemR);
+    gShowSeconds = GetControlValue((ControlHandle)itemH);
+
+    gFlipInterval = gFlipDlgValue;
+    {
+      unsigned long nowSecs;
+      GetDateTime(&nowSecs);
+      ApplyInversionSchedule(nowSecs);
+    }
 
     UpdateLayout(gWindow->portRect);
     RedrawAll();
@@ -1063,7 +1302,7 @@ void ShowStartupScreen() {
   destR.bottom = destR.top + h;
 
   BeginDraw();
-  EraseRect(&gWindow->portRect);
+  EraseWholePort();
   DrawPicture(logo, &destR);
   EndDraw();
   BlitToScreen();
@@ -1166,7 +1405,12 @@ int main(int argc, char **argv) {
           RedrawAll();
         }
         if (key == 'i' || key == 'I') {
-          gInverted = !gInverted;
+          gInvertBase = !gInvertBase;
+          {
+            unsigned long nowSecs;
+            GetDateTime(&nowSecs);
+            ApplyInversionSchedule(nowSecs);
+          }
           UpdateLayout(gWindow->portRect);
           RedrawAll();
           if (gMenuVisible) {
@@ -1253,6 +1497,12 @@ int main(int argc, char **argv) {
         gIsPM = isPM;
       }
 
+      // Phosphor protection: flip inversion on schedule
+      if (ApplyInversionSchedule(now)) {
+        UpdateLayout(gWindow->portRect);
+        RedrawAll();
+      }
+
       int minute = (secsSinceMidnight % 3600) / 60, blink = (now % 2 == 0);
       int h1 = displayHour / 10, h2 = displayHour % 10, m1 = minute / 10,
           m2 = minute % 10;
@@ -1316,6 +1566,13 @@ int main(int argc, char **argv) {
         DrawDigit(m2, g_m2_x, g_startY);
         g_prev_m2 = m2;
       }
+      if (gShowSeconds) {
+        int sec = now % 60;
+        if (sec != g_prev_sec) {
+          DrawSeconds(sec, bounds);
+          g_prev_sec = sec;
+        }
+      }
 
       if (now % 60 == 0 || g_prev_day == -1) {
         SecondsToDate(now, &date);
@@ -1350,5 +1607,11 @@ int main(int argc, char **argv) {
 
   DisposeOffscreen();
   DisposeWindow(gWindow);
+
+  // Restore the menu bar height in case we quit with it hidden, put the
+  // shared Window Manager port back to its defaults, and repaint.
+  *(short *)0x0BAA = gOrigMBarHeight;
+  RestoreWMgrPort();
+  DrawMenuBar();
   return 0;
 }
